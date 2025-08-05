@@ -9,30 +9,34 @@ You are learning backend development with NestJS in a microservices architecture
 ```
 Domain services: api-gateway, auth, posts, notification, subscription, payment, admin
 
-                 ┌────────────┐  gRPC   ┌─────────────┐
-                 │   Auth     │─────────▶│   Posts     │
-                 │(users,jwt) │◀─────────│             │
-                 └────────────┘ Kafka evt└─────────────┘
-                       ▲                        ▲
-                       │                        │
-                       │Kafka user.*            │Kafka post.*
-                       │                        │
-                       └────────────┐           ▼
-                                   │      ┌───────────────┐
-                        RabbitMQ   │      │ Notification  │─▶ SMTP / FCM
-                    send-email.cmd ▷      │               │
-                        push.cmd ▷        └───────────────┘
-                                   │            ▲
-                                   │            │Kafka pay.*
-                                   │            │Rabbit
-                 ┌────────────┐ gRPC ┌────────────┴───┐
-                 │Subscription│──────│    Payment     │─▶ Stripe stub
-                 └────────────┘      └────────────────┘
-                     Kafka sub.*              ▲
-                                             │Kafka/HTTP
-                                      ┌──────────────┐
-                                      │    Admin     │
-                                      └──────────────┘
+                 ┌────────────────────────────────────┐
+                 │   API Gateway (GraphQL Gateway)    │
+                 │     Module Federation + Apollo      │
+                 └──────────┬─────────────────────────┘
+                            │GraphQL Subgraphs
+                ┌───────────┼───────────┬──────────────┐
+                ▼           ▼           ▼              ▼
+         ┌────────────┐  gRPC     ┌─────────────┐  ┌────────────┐
+         │   Auth     │─────────▶│   Posts     │  │Subscription│
+         │(users,jwt) │◀─────────│             │  └────────────┘
+         └────────────┘ Kafka evt └─────────────┘       │gRPC
+               ▲                        ▲               ▼
+               │                        │         ┌────────────┐
+               │Kafka user.*            │Kafka    │  Payment   │─▶ Stripe stub
+               │                        │post.*   └────────────┘
+               └────────────┐           ▼               ▲
+                           │      ┌───────────────┐     │
+                RabbitMQ   │      │ Notification  │─▶ SMTP/FCM
+            send-email.cmd ▷      │               │     │
+                push.cmd ▷        └───────────────┘     │
+                           │            ▲                │
+                           │            │Kafka pay.*    │Kafka/HTTP
+                           │            │Rabbit         │
+                           └────────────┴────────────────┘
+                                        ▲
+                                 ┌──────────────┐
+                                 │    Admin     │
+                                 └──────────────┘
 
 All services: Winston → Loki → Grafana
               Traces → Jaeger
@@ -42,17 +46,19 @@ All services: Winston → Loki → Grafana
 - Clear separation of bounded contexts
 - Three communication methods for practice
 - Log audit extracted into a separate service
+- GraphQL Gateway with Module Federation for unified API
+- Apollo Federation for distributed GraphQL subgraphs
 
 ## 2. Services and Their Modules
 
 | Service | Main Modules | DB | Transport |
 |---------|--------------|-----|-----------|
-| api-gateway | auth-proxy, posts-proxy, payments-proxy, rate-limit | — | HTTP in, gRPC/Kafka out |
-| auth | users, roles, jwt, refresh-tokens | PostgreSQL | gRPC, Kafka ("user.*") |
-| posts | posts, comments, feed | PostgreSQL + Redis cache | gRPC, Kafka ("post.*") |
+| api-gateway | GraphQL federation gateway, auth-proxy, rate-limit, schema-stitching | — | GraphQL/HTTP in, gRPC/Kafka out |
+| auth | users, roles, jwt, refresh-tokens, GraphQL subgraph | PostgreSQL | GraphQL subgraph, gRPC, Kafka ("user.*") |
+| posts | posts, comments, feed, GraphQL subgraph | PostgreSQL + Redis cache | GraphQL subgraph, gRPC, Kafka ("post.*") |
 | notification | mail, push, templates | Redis (delayed) | RabbitMQ consumer, Kafka ("user.", "post.") |
-| subscription | plans, webhooks | PostgreSQL | gRPC to payment, Kafka ("sub.*") |
-| payment | invoices, stripe-stub | PostgreSQL | gRPC ("getUser", "charge"), Kafka ("pay.*") |
+| subscription | plans, webhooks, GraphQL subgraph | PostgreSQL | GraphQL subgraph, gRPC to payment, Kafka ("sub.*") |
+| payment | invoices, stripe-stub, GraphQL subgraph | PostgreSQL | GraphQL subgraph, gRPC, Kafka ("pay.*") |
 | admin | audit, metrics aggregation, feature-flags | MongoDB | gRPC to all services |
 | logger (infra) | log-collector, trace-ingest | Loki | HTTP/GRPC ingest |
 
@@ -73,25 +79,30 @@ domain → application → infrastructure → interface (controller/consumer)
 - Helm charts scaffolding
 
 ### Sprint 1: Auth + Gateway
-**Goals:** Authorization, tokens, gRPC
+**Goals:** Authorization, tokens, GraphQL Federation setup
 
 **Critical Tasks:**
-- Auth service (Nest microservice)
-- gRPC contract (proto) and code-gen
-- API-Gateway (HTTP) + JWT guard
+- Auth service (Nest microservice + GraphQL subgraph)
+- GraphQL schema definition (SDL first approach)
+- API-Gateway with Apollo Federation Gateway
+- Module Federation configuration for GraphQL
+- JWT guard for GraphQL resolvers
+- gRPC contract (proto) for inter-service communication
 - Kafka "user.created"
-- Unit + e2e tests (supertest)
+- Unit + e2e tests (supertest + GraphQL testing)
 - Seed 10k users
 
 ### Sprint 2: Posts
-**Goals:** Posts CRUD, connection with Auth
+**Goals:** Posts CRUD, GraphQL subgraph, connection with Auth
 
 **Critical Tasks:**
-- Posts service: entities, repos
+- Posts service: entities, repos, GraphQL subgraph
+- GraphQL resolvers with DataLoader for N+1 optimization
+- Federation directives (@key, @external, @requires)
 - gRPC request user-profile from Auth (demo sync)
 - Kafka "post.created/updated"
-- Redis cache layer
-- Gatling smoke test (CRUD 100 rps)
+- Redis cache layer with GraphQL caching
+- Gatling smoke test (GraphQL queries 100 rps)
 
 ### Sprint 3: Notification
 **Goals:** RabbitMQ & event-driven
@@ -104,12 +115,14 @@ domain → application → infrastructure → interface (controller/consumer)
 - Contract tests (Pact) between Posts and Notification
 
 ### Sprint 4: Subscription + Payment
-**Goals:** Payment flow, Saga
+**Goals:** Payment flow, Saga, GraphQL subgraphs
 
 **Critical Tasks:**
-- Subscription service (orchestrator)
-- Payment service (Stripe stub)
-- gRPC request-response
+- Subscription service (orchestrator + GraphQL subgraph)
+- Payment service (Stripe stub + GraphQL subgraph)
+- GraphQL subscription for real-time payment status
+- Federation entity extension between services
+- gRPC request-response for internal communication
 - Kafka Saga events: subscription.requested → payment.success → subscription.activated
 - Dead-letter queue (Rabbit)
 
@@ -137,10 +150,18 @@ domain → application → infrastructure → interface (controller/consumer)
 
 ## 4. Communications — Practice Tasks
 
-### gRPC
+### GraphQL Federation
+- Unified API through Apollo Gateway
+- Subgraphs: Auth, Posts, Subscription, Payment
+- Entity extension and references between subgraphs
+- DataLoader for batch loading and N+1 prevention
+- GraphQL subscriptions for real-time updates
+
+### gRPC (internal service communication)
 - Auth ↔ Gateway (login, validateToken)
 - Posts ↔ Auth (getUserProfile)
 - Subscription ↔ Payment
+- Used for synchronous inter-service calls
 
 ### Kafka (event stream)
 - user.created, post.created, payment.succeeded, subscription.activated
@@ -165,11 +186,11 @@ domain → application → infrastructure → interface (controller/consumer)
 ```javascript
 VU: 50 → 500
 Ramp: 10m
-— POST /auth/sign-in (25%)
-— GET /posts/feed (40%)
-— POST /posts (10%)
-— POST /subscription (15%)
-— POST /posts/:id/like (10%)
+— GraphQL mutation signIn (25%)
+— GraphQL query postsFeed (40%)
+— GraphQL mutation createPost (10%)
+— GraphQL mutation createSubscription (15%)
+— GraphQL mutation likePost (10%)
 SLA: 95% < 200 ms, error < 0.5%
 ```
 
@@ -205,10 +226,13 @@ Build → Unit tests → Docker build & push → Helm upgrade --install
 ## 9. Demo Readiness Checklist
 
 - [ ] All services start with single command `make dev`
-- [ ] `k6 run smoke.js` passes SLA
-- [ ] Grafana shows dashboards
+- [ ] GraphQL Gateway federates all subgraphs successfully
+- [ ] Apollo Studio shows federated schema and query plan
+- [ ] `k6 run smoke.js` passes SLA for GraphQL operations
+- [ ] Grafana shows dashboards with GraphQL metrics
 - [ ] Loki stores logs ≥ 3 days, can filter by post_id
 - [ ] Chaos experiment: kill payment-pod; Saga completes with "subscription.failed"
-- [ ] README contains diagram + Postman/Thunder Client collection
+- [ ] README contains diagram + GraphQL playground collection
+- [ ] Module Federation properly configured for all GraphQL subgraphs
 
 **Good luck with your training!**
