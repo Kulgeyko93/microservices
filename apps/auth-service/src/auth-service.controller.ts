@@ -1,4 +1,4 @@
-import { Controller } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { AuthService } from './auth-service.service';
 
@@ -19,5 +19,14 @@ export class AuthServiceController {
   @MessagePattern({ cmd: 'validate-token' })
   async validateToken(@Payload() data: { token: string }) {
     return this.authService.validateToken(data.token);
+  }
+
+  @Get('health')
+  healthCheck() {
+    return {
+      status: 'ok',
+      service: 'auth-service',
+      timestamp: new Date().toISOString(),
+    };
   }
 }

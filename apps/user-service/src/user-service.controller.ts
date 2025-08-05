@@ -1,4 +1,4 @@
-import { Controller } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { UserService } from './user-service.service';
 
@@ -24,5 +24,14 @@ export class UserServiceController {
   @MessagePattern({ cmd: 'delete-user' })
   async deleteUser(@Payload() data: { id: string }) {
     return this.userService.deleteUser(data.id);
+  }
+
+  @Get('health')
+  healthCheck() {
+    return {
+      status: 'ok',
+      service: 'user-service',
+      timestamp: new Date().toISOString(),
+    };
   }
 }
